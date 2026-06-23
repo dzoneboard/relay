@@ -84,7 +84,9 @@
       .brand .tag {
         margin-left: auto; font-size: 10.5px; color: var(--ink-faint);
         font-family: var(--mono); letter-spacing: .08em; text-transform: uppercase;
+        cursor: pointer; background: none; border: none; padding: 0;
       }
+      .brand .tag[data-proxy="1"] { color: var(--accent); }
 
       main { flex: 1; padding: 4px 16px 28px; }
       section { margin-top: 16px; }
@@ -276,7 +278,7 @@
             </svg>
           </span>
           <h1>Relay</h1>
-          <span class="tag">on-device</span>
+          <button class="tag" id="proxyTag">on-device</button>
         </div>
       </header>
 
@@ -373,6 +375,35 @@
         <div class="row2">
           <button class="btn-ghost" id="saveCancel">Cancel</button>
           <button class="btn-primary" id="saveConfirm">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Proxy settings sheet -->
+    <div class="scrim" id="proxyScrim">
+      <div class="sheet">
+        <div class="grab"></div>
+        <h2>Proxy settings</h2>
+        <p style="font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);margin:0 0 16px;line-height:1.6">
+          Route requests through a Cloudflare Worker to bypass CORS.<br />
+          The Worker URL and secret are stored only on this device.
+        </p>
+        <div class="field">
+          <label for="proxyUrl">Worker URL</label>
+          <input id="proxyUrl" placeholder="https://relay-proxy.yourname.workers.dev"
+                 inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="proxySec">Shared secret</label>
+          <input id="proxySec" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+        <div class="row2" style="margin-top:14px">
+          <button class="btn-ghost" id="proxyOff">Disable</button>
+          <button class="btn-primary" id="proxyOn">Enable &amp; save</button>
+        </div>
+        <div class="row2" style="margin-top:8px">
+          <button class="btn-ghost" id="proxyClose" style="flex:1">Cancel</button>
         </div>
       </div>
     </div>
@@ -545,9 +576,18 @@
         $("#sendBtn").textContent = "Sending…";
         $("#corsWarn").hidden = true;
 
+        // Route through proxy if configured
+        const proxy = loadProxy();
+        let fetchUrl = url;
+        if (proxy.enabled && proxy.url && proxy.secret) {
+          fetchUrl = proxy.url.replace(/\/$/, "");
+          opts.headers["X-Relay-Target"] = url;
+          opts.headers["X-Relay-Secret"] = proxy.secret;
+        }
+
         const t0 = performance.now();
         try {
-          const res = await fetch(url, opts);
+          const res = await fetch(fetchUrl, opts);
           const ms = Math.round(performance.now() - t0);
           const text = await res.text();
           const ct = res.headers.get("content-type") || "";
@@ -597,10 +637,16 @@
         const warn = $("#corsWarn");
         if (r.networkError) {
           warn.hidden = false;
-          warn.innerHTML =
-            "<b>Blocked by the browser.</b> A Home Screen app makes real cross-origin requests, " +
-            "so the server must allow this origin via CORS. This works for your own endpoints once they " +
-            "send <code>Access-Control-Allow-Origin</code>. Third-party APIs that don't allow it will fail here.";
+          const p = loadProxy();
+          if (p.enabled && p.url) {
+            warn.innerHTML =
+              "<b>Request failed via proxy.</b> The Worker may have rejected the host (not in allowlist), " +
+              "the secret may be wrong, or the Worker itself is unreachable. Check the Worker logs.";
+          } else {
+            warn.innerHTML =
+              "<b>Blocked by the browser (CORS).</b> Tap <b>on-device</b> in the header to configure a " +
+              "Cloudflare Worker proxy, or ensure the server sends <code>Access-Control-Allow-Origin</code>.";
+          }
         } else {
           warn.hidden = true;
         }
@@ -725,6 +771,51 @@
       };
 
       $$(".scrim").forEach((sc) => (sc.onclick = (e) => { if (e.target === sc) sc.dataset.open = "0"; }));
+
+      // ---------- proxy ----------
+      const PROXY_KEY = "relay.proxy.v1";
+      function loadProxy() {
+        try { return JSON.parse(localStorage.getItem(PROXY_KEY)) || {}; }
+        catch { return {}; }
+      }
+      function saveProxy(cfg) { localStorage.setItem(PROXY_KEY, JSON.stringify(cfg)); }
+
+      function refreshProxyTag() {
+        const p = loadProxy();
+        const tag = $("#proxyTag");
+        if (p.enabled && p.url) {
+          tag.textContent = "proxied";
+          tag.dataset.proxy = "1";
+        } else {
+          tag.textContent = "on-device";
+          tag.dataset.proxy = "0";
+        }
+      }
+
+      const proxyScrim = $("#proxyScrim");
+      $("#proxyTag").onclick = () => {
+        const p = loadProxy();
+        $("#proxyUrl").value = p.url || "";
+        $("#proxySec").value = p.secret || "";
+        proxyScrim.dataset.open = "1";
+      };
+      $("#proxyClose").onclick = () => (proxyScrim.dataset.open = "0");
+      $("#proxyOff").onclick = () => {
+        saveProxy({ ...loadProxy(), enabled: false });
+        refreshProxyTag();
+        proxyScrim.dataset.open = "0";
+      };
+      $("#proxyOn").onclick = () => {
+        const url = $("#proxyUrl").value.trim();
+        const secret = $("#proxySec").value;
+        if (!url) { alert("Enter the Worker URL."); return; }
+        if (!secret) { alert("Enter the shared secret."); return; }
+        saveProxy({ url, secret, enabled: true });
+        refreshProxyTag();
+        proxyScrim.dataset.open = "0";
+      };
+
+      refreshProxyTag();
 
       fillKV($("#paramsKV"), {}, ["query param", "value"]);
       fillKV($("#headersKV"), {}, ["header", "value"]);
